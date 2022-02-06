@@ -1731,23 +1731,25 @@ contract Trident is ERC721Enumerable, Ownable {
     using SafeMath for uint256;
     
     // mint price
-    uint256 public MINT_PRICE = 1000000000000000;
+    uint256 public MINT_PRICE = 0.001 ether;
 
     // genesis mint price
-    uint256 public GENESIS_MINT_PRICE = 10000000000;
+    uint256 public GENESIS_MINT_PRICE = 0.0005 ether;
 
-    // max number of tokens that can be minted - 1000 in production and decrease each day
-    uint256 public  MAX_TOKENS;
-    
+    // max number of tokens that can be minted - 1000 in production 
+    uint256 public INITIAL_MAX_TOKENS;
+
     // max number of genesis tokens that can be minted - 100 in production and decrease each day
     uint256 public GENESIS_MAX_TOKEN;
 
     // number of tokens have been minted so far
     uint256 public minted;
 
+    mapping(address => uint256) public freeMints;
+
     IERC20 public POS_TOKEN;
 
-    string baseTokenURI;
+    string public baseTokenURI;
     
     struct Referrer {
         uint256 totalReward;
@@ -1759,38 +1761,46 @@ contract Trident is ERC721Enumerable, Ownable {
     mapping(address => Referrer) public referrers;
 
     constructor(
-        uint256 _MAX_TOKENS, uint256 _GENESIS_MAX_TOKEN, IERC20 _POS_TOKEN) ERC721("Trident", "TRIDENT") {
-            MAX_TOKENS = _MAX_TOKENS;
+        uint256 _INITIAL_MAX_TOKENS, uint256 _GENESIS_MAX_TOKEN, IERC20 _POS_TOKEN) ERC721("Trident", "TRIDENT") {
+            INITIAL_MAX_TOKENS = _INITIAL_MAX_TOKENS;
             GENESIS_MAX_TOKEN = _GENESIS_MAX_TOKEN;
             POS_TOKEN = _POS_TOKEN;
     }
 
     function mint(address ref) external payable {
+        
+        require(INITIAL_MAX_TOKENS > 0, "Total supply == 0");
         require(tx.origin == _msgSender(), "Only EOA");
-        require(minted < MAX_TOKENS, "All tokens on-sale already sold");
-        //require(POS_TOKEN.balanceOf(_msgSender()) > 0, "You need to be a $POS holder");
+        require(minted < INITIAL_MAX_TOKENS, "All tokens on-sale already sold");
+        // require(POS_TOKEN.balanceOf(_msgSender()) > 0, "You need to be a $POS holder");
         require(ref != _msgSender(), "You can't ref. yourself");
 
-        uint256 price = MINT_PRICE;
-
-        if (minted < GENESIS_MAX_TOKEN) {
-            require(msg.value == GENESIS_MINT_PRICE, "You must pay the price of a genesis"); 
-            price = GENESIS_MINT_PRICE;
+        if (freeMints[_msgSender()] > 0 && minted > GENESIS_MAX_TOKEN ) {
+            require(msg.value == 0);
+            freeMints[_msgSender()] -= 1;
+            minted++;
+            _safeMint(msg.sender, minted);
         } else {
-            require(msg.value == MINT_PRICE, "You must pay the price of a mint"); 
-        }
-        
-        _safeMint(msg.sender, minted);
-        minted++;
+            uint256 price = MINT_PRICE;
 
-        if (ref != address(0)) {
-            referrers[ref].totalReward += price.mul(5).div(100);
-            referrers[ref].total2Claim += price.mul(5).div(100);
-            referrers[ref].totalRef += 1;
+            if (minted <= GENESIS_MAX_TOKEN) {
+                price = GENESIS_MINT_PRICE;
+            }
+
+            require(msg.value == price, "You must pay the correct price."); 
+
+            minted++;
+            _safeMint(msg.sender, minted);
+
+            if (ref != address(0)) {
+                referrers[ref].totalReward += price.mul(5).div(100);
+                referrers[ref].total2Claim += price.mul(5).div(100);
+                referrers[ref].totalRef += 1;
+            }
         }
     }
 
-    function claimRefReward() external payable {
+    function claimRefReward() external {
         uint balance = address(this).balance;
         require(balance > 0, "No ether left to withdraw");
 
@@ -1802,10 +1812,33 @@ contract Trident is ERC721Enumerable, Ownable {
         require(success, "Transfer failed.");
     }
 
+    function addFreeMint(address[] memory addresses_) public onlyOwner {
+        for (uint256 i = 0; i < addresses_.length; i++) {
+            freeMints[addresses_[i]] += 1;
+        }
+    }
+
+    function delFreeMint(address[] memory addresses_) public onlyOwner {
+        for (uint256 i = 0; i < addresses_.length; i++) {
+            freeMints[addresses_[i]] = 0;
+        }
+    }
+    
 
     function _baseURI() internal view virtual override returns (string memory) {
         return baseTokenURI;
     }
+
+    function getPrice() public view returns(uint256) {
+        if (minted <= GENESIS_MAX_TOKEN) {
+            return  GENESIS_MINT_PRICE;
+        }
+        if (freeMints[_msgSender()] > 0) {
+            return 0;
+        }
+        return MINT_PRICE;
+    }
+
 
     // only owner functions
 
