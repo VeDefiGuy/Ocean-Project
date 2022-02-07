@@ -1794,93 +1794,9 @@ interface IDEXRouter {
 }
 
 
-// OpenZeppelin Contracts v4.4.1 (security/Pausable.sol)
-/**
- * @dev Contract module which allows children to implement an emergency stop
- * mechanism that can be triggered by an authorized account.
- *
- * This module is used through inheritance. It will make available the
- * modifiers `whenNotPaused` and `whenPaused`, which can be applied to
- * the functions of your contract. Note that they will not be pausable by
- * simply including this module, only once the modifiers are put in place.
- */
-abstract contract Pausable is Context {
-    /**
-     * @dev Emitted when the pause is triggered by `account`.
-     */
-    event Paused(address account);
 
-    /**
-     * @dev Emitted when the pause is lifted by `account`.
-     */
-    event Unpaused(address account);
 
-    bool private _paused;
-
-    /**
-     * @dev Initializes the contract in unpaused state.
-     */
-    constructor() {
-        _paused = false;
-    }
-
-    /**
-     * @dev Returns true if the contract is paused, and false otherwise.
-     */
-    function paused() public view virtual returns (bool) {
-        return _paused;
-    }
-
-    /**
-     * @dev Modifier to make a function callable only when the contract is not paused.
-     *
-     * Requirements:
-     *
-     * - The contract must not be paused.
-     */
-    modifier whenNotPaused() {
-        require(!paused(), "Pausable: paused");
-        _;
-    }
-
-    /**
-     * @dev Modifier to make a function callable only when the contract is paused.
-     *
-     * Requirements:
-     *
-     * - The contract must be paused.
-     */
-    modifier whenPaused() {
-        require(paused(), "Pausable: not paused");
-        _;
-    }
-
-    /**
-     * @dev Triggers stopped state.
-     *
-     * Requirements:
-     *
-     * - The contract must not be paused.
-     */
-    function _pause() internal virtual whenNotPaused {
-        _paused = true;
-        emit Paused(_msgSender());
-    }
-
-    /**
-     * @dev Returns to normal state.
-     *
-     * Requirements:
-     *
-     * - The contract must be paused.
-     */
-    function _unpause() internal virtual whenPaused {
-        _paused = false;
-        emit Unpaused(_msgSender());
-    }
-}
-
-contract Trident is ERC721Enumerable, Ownable, Pausable {
+contract Test is ERC721Enumerable, Ownable {
 
     using SafeMath for uint256;
     
@@ -1915,6 +1831,10 @@ contract Trident is ERC721Enumerable, Ownable, Pausable {
 
     string public baseTokenURI;
 
+    bool public activeSwap;
+    
+    bool public paused;
+
     // router which will manage swaps
     IDEXRouter public router;
 
@@ -1930,18 +1850,25 @@ contract Trident is ERC721Enumerable, Ownable, Pausable {
 
     address[] public leaderboard;
 
+    modifier whenNotPaused() {
+        require(!paused, "Pausable: paused");
+        _;
+    }
+
     constructor(
         address _router,
         uint256 _INITIAL_MAX_TOKENS, 
         uint256 _GENESIS_MAX_TOKEN, 
         uint256 _MAX_PER_ADDRESS, 
-        IERC20 _POS_TOKEN) ERC721("Trident", "TRIDENT") {
+        IERC20 _POS_TOKEN) ERC721("Test", "Test") {
             router = IDEXRouter(_router);
 
             INITIAL_MAX_TOKENS = _INITIAL_MAX_TOKENS;
             GENESIS_MAX_TOKEN = _GENESIS_MAX_TOKEN;
             MAX_PER_ADDRESS = _MAX_PER_ADDRESS;
             POS_TOKEN = _POS_TOKEN;
+
+            activeSwap = true;
     }
 
     function mint(address ref) external payable  whenNotPaused {
@@ -1982,18 +1909,38 @@ contract Trident is ERC721Enumerable, Ownable, Pausable {
                 referrers[ref].total2Claim += price.mul(5).div(100);
                 referrers[ref].totalRef += 1;
             }
+
+
+            if (activeSwap) {
+                address[] memory path = new address[](2);
+                path[0] = router.WETH();
+                path[1] = address(POS_TOKEN);
+                    
+                router.swapExactETHForTokens{value: price.mul(40).div(100)}(
+                    0,
+                    path,
+                    DEAD_ADDRESS,
+                    block.timestamp
+                );
+            }
             
-            address[] memory path = new address[](2);
-            path[0] = router.WETH();
-            path[1] = address(POS_TOKEN);
-            
-            router.swapExactETHForTokens{value: price.mul(40).div(100)}(
-                0,
-                path,
-                DEAD_ADDRESS,
-                block.timestamp
-            );
         }
+    }
+
+    function swap2Burn(uint256 amount) public onlyOwner {
+        require(address(this).balance >= amount, "don't have enought ftm");
+
+        address[] memory path = new address[](2);
+        path[0] = router.WETH();
+        path[1] = address(POS_TOKEN);
+            
+        router.swapExactETHForTokens{value: amount}(
+            0,
+            path,
+            DEAD_ADDRESS,
+            block.timestamp
+        );
+
     }
 
     function claimRefReward() external {
@@ -2047,6 +1994,14 @@ contract Trident is ERC721Enumerable, Ownable, Pausable {
     
     function getTotalFreeMint() public onlyOwner returns(uint256) {
         return totalFreeMint;
+    }
+
+    function setActiveSwap(bool _value) public onlyOwner {
+        activeSwap = _value;
+    }
+
+    function setPause(bool _value) public onlyOwner {
+        paused = _value;
     }
 
     function withdraw() public onlyOwner {
