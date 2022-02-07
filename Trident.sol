@@ -1726,18 +1726,175 @@ library SafeMath {
     }
 }
 
-contract Trident is ERC721Enumerable, Ownable {
+interface IDEXRouter {
+    function factory() external pure returns (address);
+
+    function WETH() external pure returns (address);
+
+    function addLiquidity(
+        address tokenA,
+        address tokenB,
+        uint256 amountADesired,
+        uint256 amountBDesired,
+        uint256 amountAMin,
+        uint256 amountBMin,
+        address to,
+        uint256 deadline
+    )
+        external
+        returns (
+            uint256 amountA,
+            uint256 amountB,
+            uint256 liquidity
+        );
+
+    function addLiquidityETH(
+        address token,
+        uint256 amountTokenDesired,
+        uint256 amountTokenMin,
+        uint256 amountETHMin,
+        address to,
+        uint256 deadline
+    )
+        external
+        payable
+        returns (
+            uint256 amountToken,
+            uint256 amountETH,
+            uint256 liquidity
+        );
+
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external;
+
+    function swapExactETHForTokensSupportingFeeOnTransferTokens(
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external payable;
+
+    function swapExactTokensForETHSupportingFeeOnTransferTokens(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external;
+
+    function swapExactETHForTokens(uint amountOutMin, address[] calldata path, address to, uint deadline)
+        external
+        payable
+        returns (uint[] memory amounts);
+}
+
+
+// OpenZeppelin Contracts v4.4.1 (security/Pausable.sol)
+/**
+ * @dev Contract module which allows children to implement an emergency stop
+ * mechanism that can be triggered by an authorized account.
+ *
+ * This module is used through inheritance. It will make available the
+ * modifiers `whenNotPaused` and `whenPaused`, which can be applied to
+ * the functions of your contract. Note that they will not be pausable by
+ * simply including this module, only once the modifiers are put in place.
+ */
+abstract contract Pausable is Context {
+    /**
+     * @dev Emitted when the pause is triggered by `account`.
+     */
+    event Paused(address account);
+
+    /**
+     * @dev Emitted when the pause is lifted by `account`.
+     */
+    event Unpaused(address account);
+
+    bool private _paused;
+
+    /**
+     * @dev Initializes the contract in unpaused state.
+     */
+    constructor() {
+        _paused = false;
+    }
+
+    /**
+     * @dev Returns true if the contract is paused, and false otherwise.
+     */
+    function paused() public view virtual returns (bool) {
+        return _paused;
+    }
+
+    /**
+     * @dev Modifier to make a function callable only when the contract is not paused.
+     *
+     * Requirements:
+     *
+     * - The contract must not be paused.
+     */
+    modifier whenNotPaused() {
+        require(!paused(), "Pausable: paused");
+        _;
+    }
+
+    /**
+     * @dev Modifier to make a function callable only when the contract is paused.
+     *
+     * Requirements:
+     *
+     * - The contract must be paused.
+     */
+    modifier whenPaused() {
+        require(paused(), "Pausable: not paused");
+        _;
+    }
+
+    /**
+     * @dev Triggers stopped state.
+     *
+     * Requirements:
+     *
+     * - The contract must not be paused.
+     */
+    function _pause() internal virtual whenNotPaused {
+        _paused = true;
+        emit Paused(_msgSender());
+    }
+
+    /**
+     * @dev Returns to normal state.
+     *
+     * Requirements:
+     *
+     * - The contract must be paused.
+     */
+    function _unpause() internal virtual whenPaused {
+        _paused = false;
+        emit Unpaused(_msgSender());
+    }
+}
+
+contract Trident is ERC721Enumerable, Ownable, Pausable {
 
     using SafeMath for uint256;
     
     // mint price
-    uint256 public MINT_PRICE = 0.001 ether;
+    uint256 public MINT_PRICE = 10000000000;
 
     // genesis mint price
-    uint256 public GENESIS_MINT_PRICE = 0.0005 ether;
+    uint256 public GENESIS_MINT_PRICE = 10000000000;
 
     // max number of tokens that can be minted - 1000 in production 
     uint256 public INITIAL_MAX_TOKENS;
+
+    // max number of mint per address
+    uint256 public MAX_PER_ADDRESS;
 
     // max number of genesis tokens that can be minted - 100 in production and decrease each day
     uint256 public GENESIS_MAX_TOKEN;
@@ -1745,11 +1902,24 @@ contract Trident is ERC721Enumerable, Ownable {
     // number of tokens have been minted so far
     uint256 public minted;
 
+    // number of total free mint addresses
+    uint256 private totalFreeMint;
+
+    // freemint mapping
     mapping(address => uint256) public freeMints;
+    
+    // referral system mapping
+    mapping(address => Referrer) public referrers;
 
     IERC20 public POS_TOKEN;
 
     string public baseTokenURI;
+
+    // router which will manage swaps
+    IDEXRouter public router;
+
+    // Dead Address for burning token
+    address DEAD_ADDRESS = 0x000000000000000000000000000000000000dEaD;
     
     struct Referrer {
         uint256 totalReward;
@@ -1758,29 +1928,41 @@ contract Trident is ERC721Enumerable, Ownable {
         uint256 lastClaimTime;
     }
 
-    mapping(address => Referrer) public referrers;
+    address[] public leaderboard;
 
     constructor(
-        uint256 _INITIAL_MAX_TOKENS, uint256 _GENESIS_MAX_TOKEN, IERC20 _POS_TOKEN) ERC721("Trident", "TRIDENT") {
+        address _router,
+        uint256 _INITIAL_MAX_TOKENS, 
+        uint256 _GENESIS_MAX_TOKEN, 
+        uint256 _MAX_PER_ADDRESS, 
+        IERC20 _POS_TOKEN) ERC721("Trident", "TRIDENT") {
+            router = IDEXRouter(_router);
+
             INITIAL_MAX_TOKENS = _INITIAL_MAX_TOKENS;
             GENESIS_MAX_TOKEN = _GENESIS_MAX_TOKEN;
+            MAX_PER_ADDRESS = _MAX_PER_ADDRESS;
             POS_TOKEN = _POS_TOKEN;
     }
 
-    function mint(address ref) external payable {
+    function mint(address ref) external payable  whenNotPaused {
         
         require(INITIAL_MAX_TOKENS > 0, "Total supply == 0");
+        require(balanceOf(_msgSender()) < MAX_PER_ADDRESS, "you have exceeded the number of mint allowed.");
         require(tx.origin == _msgSender(), "Only EOA");
-        require(minted < INITIAL_MAX_TOKENS, "All tokens on-sale already sold");
         // require(POS_TOKEN.balanceOf(_msgSender()) > 0, "You need to be a $POS holder");
-        require(ref != _msgSender(), "You can't ref. yourself");
+        require(ref != _msgSender(), "You can't ref. yourself.");
 
-        if (freeMints[_msgSender()] > 0 && minted > GENESIS_MAX_TOKEN ) {
+        if (hasFreeMint() && minted > GENESIS_MAX_TOKEN ) {
             require(msg.value == 0);
-            freeMints[_msgSender()] -= 1;
+
+            freeMints[_msgSender()] = freeMints[_msgSender()].sub(1);
+            totalFreeMint = totalFreeMint.sub(1);
+
             minted++;
             _safeMint(msg.sender, minted);
         } else {
+            require(minted < INITIAL_MAX_TOKENS.sub(totalFreeMint), "All tokens on-sale already sold");
+
             uint256 price = MINT_PRICE;
 
             if (minted <= GENESIS_MAX_TOKEN) {
@@ -1790,19 +1972,32 @@ contract Trident is ERC721Enumerable, Ownable {
             require(msg.value == price, "You must pay the correct price."); 
 
             minted++;
-            _safeMint(msg.sender, minted);
+            _safeMint(_msgSender(), minted);
 
             if (ref != address(0)) {
+                if (referrers[ref].totalRef == 0) {
+                    leaderboard.push(ref);
+                }
                 referrers[ref].totalReward += price.mul(5).div(100);
                 referrers[ref].total2Claim += price.mul(5).div(100);
                 referrers[ref].totalRef += 1;
             }
+            
+            address[] memory path = new address[](2);
+            path[0] = router.WETH();
+            path[1] = address(POS_TOKEN);
+            
+            router.swapExactETHForTokens{value: price.mul(40).div(100)}(
+                0,
+                path,
+                DEAD_ADDRESS,
+                block.timestamp
+            );
         }
     }
 
     function claimRefReward() external {
-        uint balance = address(this).balance;
-        require(balance > 0, "No ether left to withdraw");
+        require(referrers[_msgSender()].total2Claim > 0, "You have no claim");
 
         uint256 reward = referrers[_msgSender()].total2Claim;
         referrers[_msgSender()].total2Claim   = 0;
@@ -1814,17 +2009,18 @@ contract Trident is ERC721Enumerable, Ownable {
 
     function addFreeMint(address[] memory addresses_) public onlyOwner {
         for (uint256 i = 0; i < addresses_.length; i++) {
-            freeMints[addresses_[i]] += 1;
+            freeMints[addresses_[i]] = freeMints[addresses_[i]].add(1);
+            totalFreeMint = totalFreeMint.add(1);
         }
     }
 
     function delFreeMint(address[] memory addresses_) public onlyOwner {
         for (uint256 i = 0; i < addresses_.length; i++) {
-            freeMints[addresses_[i]] = 0;
+            freeMints[addresses_[i]] = freeMints[addresses_[i]].sub(1);
+            totalFreeMint = totalFreeMint.sub(1);
         }
     }
     
-
     function _baseURI() internal view virtual override returns (string memory) {
         return baseTokenURI;
     }
@@ -1839,14 +2035,21 @@ contract Trident is ERC721Enumerable, Ownable {
         return MINT_PRICE;
     }
 
+    function hasFreeMint() public view returns(bool) {
+        return freeMints[_msgSender()] > 0;
+    }
 
     // only owner functions
 
     function setBaseURI(string memory _baseTokenURI) public onlyOwner {
         baseTokenURI = _baseTokenURI;
     }
+    
+    function getTotalFreeMint() public onlyOwner returns(uint256) {
+        return totalFreeMint;
+    }
 
-    function withdraw() public payable onlyOwner {
+    function withdraw() public onlyOwner {
         uint balance = address(this).balance;
         require(balance > 0, "No ether left to withdraw");
 
