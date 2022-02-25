@@ -1,8 +1,11 @@
 /*
-Staking of Trident NFT by Poseidon Finance
+
+
+by Poseidon Finance
 
 dapp: https://poseidonfinancexyz.com
 twitter: https://twitter.com/@poseidon_fi
+
 */
 pragma solidity ^0.8.0;
 
@@ -1789,7 +1792,6 @@ interface ISeed {
 }
 
 contract TridentStaking is Ownable {
-
     using SafeMath for uint256;
 
     // second per day
@@ -1806,13 +1808,12 @@ contract TridentStaking is Ownable {
     uint256 public totalStaked;
     // total to buyback and burn
     uint256 public totalBuyback;
-
     // trident nft contract
     ERC721Enumerable trident;
-
     // Random contract
     ISeed randomContract;
-
+    // router which will manage swaps
+    IDEXRouter public router;
     // Poseidon token: $POS
     IERC20 token;
 
@@ -1834,11 +1835,13 @@ contract TridentStaking is Ownable {
         ERC721Enumerable _trident, 
         IERC20 _token,
         ISeed _randomContract,
+        IDEXRouter _router,
         uint256 _claimFees) {
             trident = _trident;
             token = _token;
             CLAIM_FEES = _claimFees;
             randomContract = _randomContract;
+            router = _router;
 
             paused = true;
             rewardPerSecond = REWARD_PER_DAY.div(SECOND_PER_DAY);
@@ -1879,7 +1882,7 @@ contract TridentStaking is Ownable {
             // increase total distributed claim fees
             totalDistributedRewards += getFeesFromToken(tokenIds[i]).mul(30).div(100);
             // increase buyback
-            totalBuyback += tokenIds[i].mul(70).div(100);
+            totalBuyback += getFeesFromToken(tokenIds[i]).mul(70).div(100);
             
             resetToken(tokenIds[i], false);
         }
@@ -1908,18 +1911,19 @@ contract TridentStaking is Ownable {
         uint256 totalDistributedRewards = 0;
 
         for (uint256 i = 0; i < tokenIds.length; i++) {
-            require(trident.ownerOf(tokenIds[i]) == _msgSender(), "you are not the owner of given tokenId");
-            require(!stakedTridents[tokenIds[i]].staked, "token already staked");
+            require(stakedTridents[tokenIds[i]].owner == _msgSender(), "you are not the owner of given tokenId");
+            require(stakedTridents[tokenIds[i]].staked, "token not staked yet");
             require(openChestTokenStatus(tokenIds[i]), "Forbidden.");
 
+            randomContract.update(_msgSender());
+
             uint16 draw = randomContract.draw();
+            totalRewards += getPendingRewards(tokenIds[i]);
             // check draw result and add rewards
             if (draw == randomContract.getWinnerId()) {
-                totalRewards += getPendingRewards(tokenIds[i]).mul(2);
+                totalRewards += REWARD_PER_DAY.mul(2);
             } else if (draw == randomContract.getLooserId()) {
-                totalRewards += 0;
-            } else {
-                totalRewards += getPendingRewards(tokenIds[i]);
+                totalRewards -= 1000000;
             }
 
             totalFtmToClaim = totalFtmToClaim.add(stakedTridents[tokenIds[i]].ftmToClaim);
@@ -1927,7 +1931,7 @@ contract TridentStaking is Ownable {
             // increase total distributed claim fees
             totalDistributedRewards += getFeesFromToken(tokenIds[i]).mul(30).div(100);
             // increase buyback
-            totalBuyback += tokenIds[i].mul(70).div(100);
+            totalBuyback += getFeesFromToken(tokenIds[i]).mul(70).div(100);
 
             resetToken(tokenIds[i], false);
 
@@ -1993,6 +1997,19 @@ contract TridentStaking is Ownable {
         }
     }
 
+    function swapFTMForPOS(uint256 amount, address dest) private {
+        address[] memory path = new address[](2);
+        path[0] = router.WETH();
+        path[1] = address(token);
+            
+        router.swapExactETHForTokens{value: amount}(
+            0,
+            path,
+            dest,
+            block.timestamp
+        );
+    }
+
     //
     // VIEW FUNCTIONS
     //
@@ -2012,7 +2029,7 @@ contract TridentStaking is Ownable {
     }
 
     function openChestTokenStatus(uint256 tokenId) public view returns(bool) {
-        return block.timestamp - stakedTridents[tokenId].lastClaim >= 3 days;
+        return block.timestamp - stakedTridents[tokenId].lastClaim >= 1;
     }
 
     function getFeesFromToken(uint256 tokenId) public view returns(uint256) {
@@ -2048,5 +2065,18 @@ contract TridentStaking is Ownable {
 
     function setClaimFeesValue(uint256 _fees) onlyOwner external {
         CLAIM_FEES = _fees;
+    }
+
+    function setRandomSource(ISeed _randomContract) external onlyOwner {
+        randomContract = _randomContract;
+    }
+
+    /**
+     * buyback token from claim fees and burn them to dead address
+     */
+    function buyback() public onlyOwner {
+        require(address(this).balance >= totalBuyback, "don't have enought ftm");
+        swapFTMForPOS(totalBuyback, 0x000000000000000000000000000000000000dEaD);
+        totalBuyback = 0;
     }
 }
